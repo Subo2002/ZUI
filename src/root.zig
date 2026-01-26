@@ -235,6 +235,15 @@ pub const UI = struct {
         comps.items(.no_children)[parent.index] += 1;
     }
 
+    pub fn addRoot(ui: *UI, data: ContextData, alloc: Allocator) !Context {
+        const context = try ui.getContextRef(alloc);
+        const comps = ui.comps;
+        comps.items(.context)[context.index] = data;
+        comps.items(.parent)[context.index] = .invalid;
+        comps.items(.child_no)[context.index] = 0;
+        ui.no_leafs += 1;
+    }
+
     pub fn findLeafNodes(ui: *UI, buffer: []Context) []Context {
         assert(buffer.len >= ui.no_leafs);
         var leaf_no: usize = 0;
