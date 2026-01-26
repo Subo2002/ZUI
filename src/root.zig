@@ -193,6 +193,12 @@ pub const UI = struct {
     no_leafs: u32,
     root: Context,
 
+    pub fn init(ui: *UI) void {
+        ui.no_nodes = 0;
+        ui.nodes_limit = 0;
+        ui.no_leafs = 0;
+    }
+
     fn getContextRef(ui: *UI, alloc: Allocator) !Context {
         if (ui.no_nodes == ui.nodes_limit) {
             try ui.comps.append(alloc, .emptyValid);
