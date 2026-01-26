@@ -205,6 +205,14 @@ pub const UI = struct {
         ui.no_nodes = 0;
         ui.nodes_limit = 0;
         ui.no_leafs = 0;
+        ui.root = .invalid;
+    }
+
+    pub fn clear(ui: *UI) void {
+        ui.no_nodes = 0;
+        ui.nodes_limit = 0;
+        ui.no_leafs = 0;
+        ui.comps.clearRetainingCapacity();
     }
 
     fn getContextRef(ui: *UI, alloc: Allocator) !Context {
@@ -242,6 +250,7 @@ pub const UI = struct {
         comps.items(.parent)[context.index] = .invalid;
         comps.items(.child_no)[context.index] = 0;
         ui.no_leafs += 1;
+        ui.root = context;
     }
 
     pub fn findLeafNodes(ui: *UI, buffer: []Context) []Context {
