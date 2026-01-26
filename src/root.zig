@@ -150,13 +150,19 @@ pub const Context = struct {
     }
 };
 
-pub const InternalContextData = packed struct {
+pub const InternalContextDataFlags = packed struct {
+    valid: bool,
+};
+
+pub const InternalContextData = struct {
     pub const empty = InternalContextData{
         .context = ContextData.empty,
         .parent = .invalid,
         .no_children = 0,
         .child_no = 0,
-        .valid = false,
+        .flags = .{
+            .valid = false,
+        },
     };
 
     pub const emptyValid = InternalContextData{
@@ -164,14 +170,16 @@ pub const InternalContextData = packed struct {
         .parent = .invalid,
         .no_children = 0,
         .child_no = 0,
-        .valid = true,
+        .flags = .{
+            .valid = true,
+        },
     };
 
     context: ContextData,
     parent: Context,
     no_children: usize,
     child_no: usize,
-    valid: bool,
+    flags: InternalContextDataFlags,
 };
 
 const ChildNodeRef = struct {
@@ -273,6 +281,12 @@ pub const UI = struct {
         }
     }
 };
+
+test "compiles" {
+    var ui: UI = undefined;
+    ui.init();
+    try std.testing.expect(ui.no_leafs == 0);
+}
 
 pub const Children = struct { nodes: []Context };
 
