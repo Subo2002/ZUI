@@ -206,6 +206,7 @@ pub const UI = struct {
         ui.nodes_limit = 0;
         ui.no_leafs = 0;
         ui.root = .invalid;
+        ui.comps = .empty;
     }
 
     pub fn clear(ui: *UI) void {
@@ -215,17 +216,21 @@ pub const UI = struct {
         ui.comps.clearRetainingCapacity();
     }
 
+    pub fn deinit(ui: *UI, alloc: Allocator) void {
+        ui.comps.deinit(alloc);
+    }
+
     fn getContextRef(ui: *UI, alloc: Allocator) !Context {
         if (ui.no_nodes == ui.nodes_limit) {
             try ui.comps.append(alloc, .emptyValid);
             ui.nodes_limit += 1;
             ui.no_nodes += 1;
-            return ui.nodes_limit - 1;
+            return Context.init(ui.nodes_limit - 1);
         }
-        for (ui.comps.items(.valid)[0..ui.nodes_limit], 0..) |valid, index| {
-            if (!valid) {
+        for (ui.comps.items(.flags)[0..ui.nodes_limit], 0..) |flags, index| {
+            if (!flags.valid) {
                 ui.no_nodes += 1;
-                return Context.init(index);
+                return Context.init(@intCast(index));
             }
         }
         unreachable;
@@ -241,6 +246,7 @@ pub const UI = struct {
         comps.items(.child_no)[context.index] = parent_no_children;
         if (parent_no_children == 0) ui.no_leafs -= 1;
         comps.items(.no_children)[parent.index] += 1;
+        return context;
     }
 
     pub fn addRoot(ui: *UI, data: ContextData, alloc: Allocator) !Context {
@@ -251,6 +257,7 @@ pub const UI = struct {
         comps.items(.child_no)[context.index] = 0;
         ui.no_leafs += 1;
         ui.root = context;
+        return context;
     }
 
     pub fn findLeafNodes(ui: *UI, buffer: []Context) []Context {
@@ -302,8 +309,31 @@ pub const UI = struct {
 
 test "compiles" {
     var ui: UI = undefined;
+    const allc = std.testing.allocator;
     ui.init();
-    try std.testing.expect(ui.no_leafs == 0);
+    defer ui.deinit(allc);
+    _ = try ui.addRoot(
+        .{
+            .x = 0,
+            .y = 0,
+            .width = AxisSize{
+                .fixed = 100,
+            },
+            .height = AxisSize{ .fixed = 50 },
+        },
+        allc,
+    );
+    _ = try ui.addContext(
+        ui.root,
+        .{
+            .x = 10,
+            .y = 10,
+            .width = AxisSize{ .fixed = 20 },
+            .height = AxisSize{ .fixed = 30 },
+        },
+        allc,
+    );
+    try std.testing.expect(ui.no_leafs == 1);
 }
 
 pub const Children = struct { nodes: []Context };
