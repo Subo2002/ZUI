@@ -156,7 +156,7 @@ pub const InternalContextDataFlags = packed struct {
 
 pub const InternalContextData = struct {
     pub const empty = InternalContextData{
-        .context = ContextData.empty,
+        .context = undefined,
         .parent = .invalid,
         .no_children = 0,
         .child_no = 0,
@@ -166,7 +166,7 @@ pub const InternalContextData = struct {
     };
 
     pub const emptyValid = InternalContextData{
-        .context = ContextData.empty,
+        .context = undefined,
         .parent = .invalid,
         .no_children = 0,
         .child_no = 0,
