@@ -154,33 +154,37 @@ pub const InternalContextDataFlags = packed struct {
     valid: bool,
 };
 
-pub const InternalContextData = struct {
-    pub const empty = InternalContextData{
-        .context = undefined,
-        .parent = .invalid,
-        .no_children = 0,
-        .child_no = 0,
-        .flags = .{
-            .valid = false,
-        },
-    };
+pub fn InternalContextData(ContextDataType: type) type {
+    return struct {
+        const Self = @This();
 
-    pub const emptyValid = InternalContextData{
-        .context = undefined,
-        .parent = .invalid,
-        .no_children = 0,
-        .child_no = 0,
-        .flags = .{
-            .valid = true,
-        },
-    };
+        pub const empty = Self{
+            .context = undefined,
+            .parent = .invalid,
+            .no_children = 0,
+            .child_no = 0,
+            .flags = .{
+                .valid = false,
+            },
+        };
 
-    context: ContextData,
-    parent: Context,
-    no_children: usize,
-    child_no: usize,
-    flags: InternalContextDataFlags,
-};
+        pub const emptyValid = Self{
+            .context = undefined,
+            .parent = .invalid,
+            .no_children = 0,
+            .child_no = 0,
+            .flags = .{
+                .valid = true,
+            },
+        };
+
+        context: ContextDataType,
+        parent: Context,
+        no_children: usize,
+        child_no: usize,
+        flags: InternalContextDataFlags,
+    };
+}
 
 const ChildNodeRef = struct {
     parent: Context,
@@ -194,121 +198,127 @@ const ChildNodeRef = struct {
     }
 };
 
-pub const UI = struct {
-    no_nodes: u32,
-    nodes_limit: u32,
-    comps: std.MultiArrayList(InternalContextData),
-    no_leafs: u32,
-    root: Context,
+pub fn UI(Texture: type) type {
+    const ContextDataType = ContextData(Texture);
 
-    pub fn init(ui: *UI) void {
-        ui.no_nodes = 0;
-        ui.nodes_limit = 0;
-        ui.no_leafs = 0;
-        ui.root = .invalid;
-        ui.comps = .empty;
-    }
+    return struct {
+        no_nodes: u32,
+        nodes_limit: u32,
+        comps: std.MultiArrayList(InternalContextData(ContextDataType)),
+        no_leafs: u32,
+        root: Context,
 
-    pub fn clear(ui: *UI) void {
-        ui.no_nodes = 0;
-        ui.nodes_limit = 0;
-        ui.no_leafs = 0;
-        ui.comps.clearRetainingCapacity();
-    }
+        const Self = @This();
 
-    pub fn deinit(ui: *UI, alloc: Allocator) void {
-        ui.comps.deinit(alloc);
-    }
-
-    fn getContextRef(ui: *UI, alloc: Allocator) !Context {
-        if (ui.no_nodes == ui.nodes_limit) {
-            try ui.comps.append(alloc, .emptyValid);
-            ui.nodes_limit += 1;
-            ui.no_nodes += 1;
-            return Context.init(ui.nodes_limit - 1);
+        pub fn init(ui: *Self) void {
+            ui.no_nodes = 0;
+            ui.nodes_limit = 0;
+            ui.no_leafs = 0;
+            ui.root = .invalid;
+            ui.comps = .empty;
         }
-        for (ui.comps.items(.flags)[0..ui.nodes_limit], 0..) |flags, index| {
-            if (!flags.valid) {
+
+        pub fn clear(ui: *Self) void {
+            ui.no_nodes = 0;
+            ui.nodes_limit = 0;
+            ui.no_leafs = 0;
+            ui.comps.clearRetainingCapacity();
+        }
+
+        pub fn deinit(ui: *Self, alloc: Allocator) void {
+            ui.comps.deinit(alloc);
+        }
+
+        fn getContextRef(ui: *Self, alloc: Allocator) !Context {
+            if (ui.no_nodes == ui.nodes_limit) {
+                try ui.comps.append(alloc, .emptyValid);
+                ui.nodes_limit += 1;
                 ui.no_nodes += 1;
-                return Context.init(@intCast(index));
+                return Context.init(ui.nodes_limit - 1);
+            }
+            for (ui.comps.items(.flags)[0..ui.nodes_limit], 0..) |flags, index| {
+                if (!flags.valid) {
+                    ui.no_nodes += 1;
+                    return Context.init(@intCast(index));
+                }
+            }
+            unreachable;
+        }
+
+        pub fn addContext(ui: *Self, parent: Context, child: ContextDataType, alloc: Allocator) !Context {
+            const context = try ui.getContextRef(alloc);
+            const comps = ui.comps;
+            comps.items(.context)[context.index] = child;
+            comps.items(.parent)[context.index] = parent;
+            ui.no_leafs += 1;
+            const parent_no_children = comps.items(.no_children)[parent.index];
+            comps.items(.child_no)[context.index] = parent_no_children;
+            if (parent_no_children == 0) ui.no_leafs -= 1;
+            comps.items(.no_children)[parent.index] += 1;
+            return context;
+        }
+
+        pub fn addRoot(ui: *Self, data: ContextDataType, alloc: Allocator) !Context {
+            const context = try ui.getContextRef(alloc);
+            const comps = ui.comps;
+            comps.items(.context)[context.index] = data;
+            comps.items(.parent)[context.index] = .invalid;
+            comps.items(.child_no)[context.index] = 0;
+            ui.no_leafs += 1;
+            ui.root = context;
+            return context;
+        }
+
+        pub fn findLeafNodes(ui: *Self, buffer: []Context) []Context {
+            assert(buffer.len >= ui.no_leafs);
+            var leaf_no: usize = 0;
+            for (ui.comps.items(.no_children)[0..ui.nodes_limit], 0..) |no_children, index| {
+                if (no_children > 0) continue;
+                buffer[leaf_no] = Context.init(index);
+                leaf_no += 1;
+            }
+            assert(ui.no_leafs == leaf_no);
+            const leafs = buffer[0..leaf_no];
+            return leafs;
+        }
+
+        const ChildMapType = std.AutoArrayHashMapUnmanaged(ChildNodeRef, Context);
+
+        pub fn createChildMap(ui: *Self, alloc: Allocator) ChildMapType {
+            const map: ChildMapType = .empty;
+            const parents: []Context = ui.comps.items(.parent)[0..ui.nodes_limit];
+            const child_nos: []u32 = ui.comps.items(.child_no)[0..ui.nodes_limit];
+            for (parents, child_nos, 0..) |parent, child_no, index| {
+                if (!parent.isValid()) continue;
+                map.put(
+                    alloc,
+                    ChildNodeRef.init(parent, child_no),
+                    Context.init(index),
+                );
+            }
+            return map;
+        }
+
+        pub fn computeSizes(ui: *Self, leaf_nodes: []Context, trans_allc: Allocator) void {
+            const queue: Queue(Context) = .empty;
+            queue.enqueueSlice(trans_allc, leaf_nodes);
+            defer trans_allc.free(queue.data);
+
+            //WRONG! parents of more than one child get added to the list multiple times
+            //so contribute to their parents size multiple times
+            const parents: []Context = ui.comps.items(.parents)[0..ui.nodes_limit];
+            while (queue.count > 0) {
+                const node = queue.dequeue().?;
+                const parent = parents[node.index];
+                if (!parent.isValid()) continue;
+                queue.enqueue(parent, trans_allc);
             }
         }
-        unreachable;
-    }
-
-    pub fn addContext(ui: *UI, parent: Context, child: ContextData, alloc: Allocator) !Context {
-        const context = try ui.getContextRef(alloc);
-        const comps = ui.comps;
-        comps.items(.context)[context.index] = child;
-        comps.items(.parent)[context.index] = parent;
-        ui.no_leafs += 1;
-        const parent_no_children = comps.items(.no_children)[parent.index];
-        comps.items(.child_no)[context.index] = parent_no_children;
-        if (parent_no_children == 0) ui.no_leafs -= 1;
-        comps.items(.no_children)[parent.index] += 1;
-        return context;
-    }
-
-    pub fn addRoot(ui: *UI, data: ContextData, alloc: Allocator) !Context {
-        const context = try ui.getContextRef(alloc);
-        const comps = ui.comps;
-        comps.items(.context)[context.index] = data;
-        comps.items(.parent)[context.index] = .invalid;
-        comps.items(.child_no)[context.index] = 0;
-        ui.no_leafs += 1;
-        ui.root = context;
-        return context;
-    }
-
-    pub fn findLeafNodes(ui: *UI, buffer: []Context) []Context {
-        assert(buffer.len >= ui.no_leafs);
-        var leaf_no: usize = 0;
-        for (ui.comps.items(.no_children)[0..ui.nodes_limit], 0..) |no_children, index| {
-            if (no_children > 0) continue;
-            buffer[leaf_no] = Context.init(index);
-            leaf_no += 1;
-        }
-        assert(ui.no_leafs == leaf_no);
-        const leafs = buffer[0..leaf_no];
-        return leafs;
-    }
-
-    const ChildMapType = std.AutoArrayHashMapUnmanaged(ChildNodeRef, Context);
-
-    pub fn createChildMap(ui: *UI, alloc: Allocator) ChildMapType {
-        const map: ChildMapType = .empty;
-        const parents: []Context = ui.comps.items(.parent)[0..ui.nodes_limit];
-        const child_nos: []u32 = ui.comps.items(.child_no)[0..ui.nodes_limit];
-        for (parents, child_nos, 0..) |parent, child_no, index| {
-            if (!parent.isValid()) continue;
-            map.put(
-                alloc,
-                ChildNodeRef.init(parent, child_no),
-                Context.init(index),
-            );
-        }
-        return map;
-    }
-
-    pub fn computeSizes(ui: *UI, leaf_nodes: []Context, trans_allc: Allocator) void {
-        const queue: Queue(Context) = .empty;
-        queue.enqueueSlice(trans_allc, leaf_nodes);
-        defer trans_allc.free(queue.data);
-
-        //WRONG! parents of more than one child get added to the list multiple times
-        //so contribute to their parents size multiple times
-        const parents: []Context = ui.comps.items(.parents)[0..ui.nodes_limit];
-        while (queue.count > 0) {
-            const node = queue.dequeue().?;
-            const parent = parents[node.index];
-            if (!parent.isValid()) continue;
-            queue.enqueue(parent, trans_allc);
-        }
-    }
-};
+    };
+}
 
 test "compiles" {
-    var ui: UI = undefined;
+    var ui: UI(void) = undefined;
     const allc = std.testing.allocator;
     ui.init();
     defer ui.deinit(allc);
@@ -320,6 +330,7 @@ test "compiles" {
                 .fixed = 100,
             },
             .height = AxisSize{ .fixed = 50 },
+            .tex = {},
         },
         allc,
     );
@@ -330,6 +341,7 @@ test "compiles" {
             .y = 10,
             .width = AxisSize{ .fixed = 20 },
             .height = AxisSize{ .fixed = 30 },
+            .tex = {},
         },
         allc,
     );
@@ -338,12 +350,15 @@ test "compiles" {
 
 pub const Children = struct { nodes: []Context };
 
-pub const ContextData = struct {
-    x: u32,
-    y: u32,
-    width: AxisSize,
-    height: AxisSize,
-};
+pub fn ContextData(Texture: type) type {
+    return struct {
+        x: u32,
+        y: u32,
+        width: AxisSize,
+        height: AxisSize,
+        tex: Texture,
+    };
+}
 
 pub const AxisSizeType = enum {
     grow,
