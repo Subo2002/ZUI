@@ -199,9 +199,9 @@ const ChildNodeRef = struct {
 };
 
 pub fn UI(Texture: type) type {
-    const ContextDataType = ContextData(Texture);
-
     return struct {
+        pub const ContextDataType = ContextData(Texture);
+
         no_nodes: u32,
         nodes_limit: u32,
         comps: std.MultiArrayList(InternalContextData(ContextDataType)),
