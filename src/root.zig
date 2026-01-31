@@ -284,19 +284,38 @@ pub fn UI(Texture: type) type {
 
         const ChildMapType = std.AutoArrayHashMapUnmanaged(ChildNodeRef, Context);
 
-        pub fn createChildMap(ui: *Self, alloc: Allocator) ChildMapType {
-            const map: ChildMapType = .empty;
+        pub fn createChildMap(ui: *Self, alloc: Allocator) !ChildMapType {
+            var map: ChildMapType = .empty;
             const parents: []Context = ui.comps.items(.parent)[0..ui.nodes_limit];
-            const child_nos: []u32 = ui.comps.items(.child_no)[0..ui.nodes_limit];
+            const child_nos = ui.comps.items(.child_no)[0..ui.nodes_limit];
             for (parents, child_nos, 0..) |parent, child_no, index| {
                 if (!parent.isValid()) continue;
-                map.put(
+                try map.put(
                     alloc,
-                    ChildNodeRef.init(parent, child_no),
-                    Context.init(index),
+                    ChildNodeRef.init(parent, @intCast(child_no)),
+                    Context.init(@intCast(index)),
                 );
             }
             return map;
+        }
+
+        pub fn createNodeList(ui: *Self, childMap: ChildMapType, alloc: Allocator) !std.ArrayListUnmanaged(Context) {
+            var list: std.ArrayListUnmanaged(Context) = .empty;
+            try list.append(alloc, ui.root);
+            var node_ptr: usize = 0;
+            const no_childrens = ui.comps.items(.no_children);
+            while (node_ptr < ui.no_nodes) : (node_ptr += 1) {
+                const node = list.items[node_ptr];
+                const no_children = no_childrens[node.index];
+                for (0..no_children) |child_no| {
+                    const child = childMap.get(.{
+                        .parent = node,
+                        .child_no = @intCast(child_no),
+                    }).?;
+                    try list.append(alloc, child);
+                }
+            }
+            return list;
         }
 
         pub fn computeSizes(ui: *Self, leaf_nodes: []Context, trans_allc: Allocator) void {
@@ -345,7 +364,13 @@ test "compiles" {
         },
         allc,
     );
-    try std.testing.expect(ui.no_leafs == 1);
+    var child_map = try ui.createChildMap(allc);
+    defer child_map.deinit(allc);
+    var nodes = try ui.createNodeList(child_map, allc);
+    defer nodes.deinit(allc);
+    try std.testing.expect(nodes.items.len == 2);
+    try std.testing.expect(ui.comps.items(.context)[nodes.items[0].index].x == 0);
+    try std.testing.expect(ui.comps.items(.context)[nodes.items[1].index].x == 10);
 }
 
 pub const Children = struct { nodes: []Context };
