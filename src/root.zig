@@ -152,6 +152,9 @@ pub const Context = struct {
 
 pub const InternalContextDataFlags = packed struct {
     valid: bool,
+    pass_up_interacts: bool, //so if it want's things under it to detect interactions
+    pass_down_interacts: bool, //whether it has a descendant that needs ui detection
+    interactable: bool,
 };
 
 pub fn InternalContextData(ContextDataType: type) type {
@@ -165,6 +168,9 @@ pub fn InternalContextData(ContextDataType: type) type {
             .child_no = 0,
             .flags = .{
                 .valid = false,
+                .pass_up_interacts = false,
+                .pass_down_interacts = false,
+                .interactable = false,
             },
         };
 
@@ -175,12 +181,15 @@ pub fn InternalContextData(ContextDataType: type) type {
             .child_no = 0,
             .flags = .{
                 .valid = true,
+                .pass_up_interacts = false,
+                .pass_down_interacts = false,
+                .interactable = false,
             },
         };
 
         context: ContextDataType,
         parent: Context,
-        no_children: usize,
+        no_children: u32,
         child_no: usize,
         flags: InternalContextDataFlags,
     };
@@ -197,6 +206,20 @@ const ChildNodeRef = struct {
         };
     }
 };
+
+pub const InteractedUI = struct {
+    interactor_index: u32,
+    context: Context,
+
+    pub fn init(interactor: u32, context: Context) InteractedUI {
+        return InteractedUI{
+            .interactor_index = interactor,
+            .context = context,
+        };
+    }
+};
+
+//want to detect "clicks" an abstraction of button clicks
 
 pub fn UI(Texture: type) type {
     return struct {
@@ -333,6 +356,234 @@ pub fn UI(Texture: type) type {
                 queue.enqueue(parent, trans_allc);
             }
         }
+
+        //This is all wrong
+        //the model is break everything in to contexts
+        //and each contexts just places it's children in order left-to-right or top-to-bottom, wrapping them around
+        //so to create a button 70% of the way down the middle of the screen
+        //take the screen context, make it lay it's child cntxs top-to-bottom
+        //add one child whose width is % it's parents
+        //add a second chid cntx
+        //and in that child cntx add a child node that is the button.
+        pub fn computePrimaryAxisPositions(ui: *Self, nodes: []Context, child_map: ChildMapType, axis: Axis, trans_allc: Allocator) !void {
+            const contexts: []ContextDataType = ui.comps.items(.context);
+            const no_childrens: []u32 = ui.comps.items(.no_children);
+            //works out primary positions of all it's child nodes
+            for (nodes) |parent| {
+                const no_children = no_childrens[parent.index];
+                if (no_children == 0) continue;
+                const parent_context = contexts[parent.index];
+
+                const children = try trans_allc.alloc(Context, no_children);
+                defer trans_allc.free(children);
+                const length = parent_context.getAxisSize(axis);
+                var empty_space = parent_context.getAxisSize(axis).fixed;
+                //asserting the size is explicit for every node now
+                //hmmmmm maybe instead should keep the contexts in child order
+                //but they move towards their wanted alignment
+                var no_moving_cntxs: u32 = 0;
+                const Moving = struct {
+                    wanted_pos: u32,
+                    cur_pos: u32,
+                    moving: bool,
+                };
+                const wanted_moving: []Moving = try trans_allc.alloc(Moving, no_children);
+                defer trans_allc.free(wanted_moving);
+                for (0..no_children) |child_no| {
+                    const child = child_map.get(.init(parent, @intCast(child_no))).?;
+                    const child_context = &contexts[child.index];
+                    children[child_no] = child;
+                    empty_space -= child_context.getAxisSize(axis).fixed;
+                    switch (child_context.getAxisPos(axis)) {
+                        .fixed => |pos| {
+                            wanted_moving[child_no].cur_pos = pos;
+                            wanted_moving[child_no].wanted_pos = pos;
+                            wanted_moving[child_no].moving = false;
+                        },
+                        .aligned => |percent| {
+                            child_context.setPosOnAxis(axis, @divTrunc(length.fixed * percent.percent, 100));
+                            wanted_moving[child_no].cur_pos = @divTrunc(length.fixed * @as(u32, @intCast(child_no)), no_children);
+                            wanted_moving[child_no].wanted_pos = @divTrunc(length.fixed * percent.percent, 100);
+                            wanted_moving[child_no].moving = true;
+                            no_moving_cntxs += 1;
+                        },
+                    }
+                }
+                assert(empty_space >= 0);
+
+                //idea for a momentum based alignment resolution alg
+                //seems quite nice
+                //my problem with it is explicitness and deviation from the user's wants
+                //if it's not exactly what the user wants maybe it's best to ditch it
+                //but could allow the option for this solution
+
+                //each context has velocity towards where it wants to be, maybe momentum based so can use the size of the ui element as well
+                //so if another context comes colliding, then they will reach equilibrium
+
+                //move the end cntx in to position
+                contexts[no_children - 1].setPosOnAxis(
+                    axis,
+                    parent_context.getAxisPos(axis).fixed +
+                        parent_context.getAxisSize(axis).fixed -
+                        contexts[no_children - 1].getAxisSize(axis).fixed,
+                );
+                wanted_moving[no_children - 1].cur_pos = contexts[no_children - 1].getAxisPos(axis).fixed;
+
+                var cur_index: u32 = 0;
+                var dirc: i32 = undefined;
+                var cntr: u32 = 0;
+                //how it's currently written this should just check and make sure the alignments work
+                //but can be extended with a "train-carriage" concept to move cntxs in to an equilibrium state
+                while (no_moving_cntxs > 0) {
+                    assert(cntr < no_children * 5);
+                    cntr += 1;
+                    const want_move: *Moving = &wanted_moving[cur_index];
+
+                    if (!want_move.moving) {
+                        cur_index += 1;
+                        cur_index %= no_children;
+                        continue;
+                    }
+
+                    const move: i32 =
+                        @as(i32, @intCast(want_move.wanted_pos)) -
+                        @as(i32, @intCast(want_move.cur_pos));
+                    dirc = if (move >= 0) 1 else -1;
+
+                    const next_index = blk: {
+                        if (move == 0) {
+                            want_move.moving = false;
+                            no_moving_cntxs -= 1;
+                            continue;
+                        } else if (move > 0) {
+                            if (cur_index == no_children - 1) {
+                                want_move.moving = false;
+                                no_moving_cntxs -= 1;
+                                continue;
+                            }
+                            break :blk cur_index + 1;
+                        } else {
+                            if (cur_index == 0) {
+                                want_move.moving = false;
+                                no_moving_cntxs -= 1;
+                                continue;
+                            }
+                            break :blk cur_index - 1;
+                        }
+                    };
+                    const next_move = &wanted_moving[next_index];
+                    const node: *ContextDataType = &contexts[cur_index];
+                    const next_node: *ContextDataType = &contexts[next_index];
+
+                    if (dirc == 1) {
+                        const gap: i32 =
+                            @as(i32, @intCast(next_move.cur_pos)) -
+                            @as(i32, @intCast(want_move.wanted_pos + node.getAxisSize(axis).fixed));
+                        if (gap >= 0) { //nice!
+                            want_move.cur_pos = want_move.wanted_pos;
+                            want_move.moving = false;
+                            no_moving_cntxs -= 1;
+                            continue;
+                        }
+
+                        want_move.cur_pos = @intCast(@as(i32, @intCast(want_move.wanted_pos)) + gap);
+                        //cur_index = next_index;
+                        unreachable;
+
+                        //if (!next_move.moving) {
+                        //    want_move.moving = false;
+                        //    continue;
+                        //}
+                        //
+                        ////we're assuming the situation can be resolved atm
+                        //assert(next_move.wanted_pos - next_move.cur_pos >= 0);
+                        //continue;
+                    }
+
+                    if (dirc == -1) {
+                        const gap: i32 =
+                            @as(i32, @intCast(want_move.wanted_pos)) -
+                            @as(i32, @intCast(next_move.cur_pos + next_node.getAxisSize(axis).fixed));
+                        if (gap >= 0) { //nice!
+                            want_move.cur_pos = want_move.wanted_pos;
+                            want_move.moving = false;
+                            no_moving_cntxs -= 1;
+                            continue;
+                        }
+                        want_move.cur_pos = @intCast(@as(i32, @intCast(want_move.wanted_pos)) + gap);
+                        //cur_index = next_index;
+                        unreachable;
+
+                        //if (!next_move.moving) {
+                        //    want_move.moving = false;
+                        //    continue;
+                        //}
+                        ////assuming resolvable atm
+                        //assert(next_move.wanted_pos - next_move.cur_pos <= 0);
+                        //continue;
+                    }
+                }
+            }
+        }
+
+        pub fn makeInteractable(ui: *Self, context: Context, pass_up_interacts: bool) void {
+            ui.comps.items(.flags)[context.index].interactable = true;
+            ui.comps.items(.flags)[context.index].pass_up_interacts = pass_up_interacts;
+        }
+
+        //nvm just gonna iterate through
+        fn prepareInteractability(ui: *Self, nodes: []Context) void {
+            var node_index: u32 = @intCast(nodes.len);
+            const flags: []InternalContextDataFlags = ui.comps.items(.flags);
+            const parents: []u32 = ui.comps.items(.parent);
+            while (node_index >= 0) : (node_index -= 1) {
+                const node = nodes[node_index];
+                const flag: *const InternalContextDataFlags = &flags[node.index];
+                if (!flag.interactable and !flag.pass_down_interacts) continue;
+                flags[parents[node.index]].pass_down_interacts = true;
+            }
+        }
+
+        pub fn createDepthFirstNodeList(ui: *Self, childMap: ChildMapType, alloc: Allocator) !std.ArrayListUnmanaged(Context) {
+            var list: std.ArrayListUnmanaged(Context) = try .initCapacity(alloc, ui.no_nodes);
+            const no_childrens = ui.comps.items(.no_children);
+            var stack: std.ArrayListUnmanaged(Context) = .empty;
+            try stack.append(alloc, ui.root);
+            defer stack.deinit(alloc);
+            while (stack.items.len > 0) {
+                const node = stack.pop().?;
+                try list.append(alloc, node);
+                const no_children = no_childrens[node.index];
+                for (0..no_children) |child_no| {
+                    const child = childMap.get(.{
+                        .parent = node,
+                        .child_no = @intCast(child_no),
+                    }).?;
+                    try stack.append(alloc, child);
+                }
+            }
+            return list;
+        }
+
+        //this could not use depth_first_nodes and instead just deal with the additional hassle of adding popins on the left and shifting child node nums
+        pub fn processClicks(ui: *Self, depth_first_nodes: []Context, click_positions: []const Vector2I, interacteds_buffer: []InteractedUI) []InteractedUI {
+            const flags: []InternalContextDataFlags = ui.comps.items(.flags);
+            const data: []ContextDataType = ui.comps.items(.context);
+            var no_interactions: u32 = 0;
+            for (0..depth_first_nodes.len) |index| {
+                const node_index = depth_first_nodes.len - index - 1;
+                const flag: *const InternalContextDataFlags = &flags[node_index];
+                if (!flag.interactable) continue;
+                const node: *const ContextDataType = &data[node_index];
+                for (click_positions, 0..) |click, interactor| {
+                    if (click.x < node.x.fixed or node.x.fixed + node.width.fixed < click.x) continue;
+                    if (click.y < node.y.fixed or node.y.fixed + node.height.fixed < click.y) continue;
+                    interacteds_buffer[no_interactions] = .init(@intCast(interactor), .init(@intCast(node_index)));
+                    no_interactions += 1;
+                }
+            }
+            return interacteds_buffer[0..no_interactions];
+        }
     };
 }
 
@@ -343,8 +594,8 @@ test "compiles" {
     defer ui.deinit(allc);
     _ = try ui.addRoot(
         .{
-            .x = 0,
-            .y = 0,
+            .x = .{ .fixed = 0 },
+            .y = .{ .fixed = 0 },
             .width = AxisSize{
                 .fixed = 100,
             },
@@ -353,37 +604,102 @@ test "compiles" {
         },
         allc,
     );
-    _ = try ui.addContext(
+    const little_rect = try ui.addContext(
         ui.root,
         .{
-            .x = 10,
-            .y = 10,
+            .x = .{ .aligned = .init(50) },
+            .y = .{ .fixed = 10 },
             .width = AxisSize{ .fixed = 20 },
             .height = AxisSize{ .fixed = 30 },
             .tex = {},
         },
         allc,
     );
+    ui.makeInteractable(little_rect, false);
     var child_map = try ui.createChildMap(allc);
     defer child_map.deinit(allc);
     var nodes = try ui.createNodeList(child_map, allc);
     defer nodes.deinit(allc);
+    try ui.computePrimaryAxisPositions(nodes.items, child_map, .x, allc);
+    var depth_first_nodes = try ui.createDepthFirstNodeList(child_map, allc);
+    defer depth_first_nodes.deinit(allc);
+    const clicks = [_]Vector2I{.init(55, 15)};
+    var interacted_ui_buffer: [1]InteractedUI = undefined;
+    const interacted_ui = ui.processClicks(
+        depth_first_nodes.items,
+        clicks[0..],
+        interacted_ui_buffer[0..1],
+    );
+
     try std.testing.expect(nodes.items.len == 2);
-    try std.testing.expect(ui.comps.items(.context)[nodes.items[0].index].x == 0);
-    try std.testing.expect(ui.comps.items(.context)[nodes.items[1].index].x == 10);
+    try std.testing.expect(ui.comps.items(.context)[nodes.items[0].index].x.fixed == 0);
+    try std.testing.expect(ui.comps.items(.context)[nodes.items[1].index].x.fixed == 50);
+    try std.testing.expect(interacted_ui.len > 0);
 }
 
 pub const Children = struct { nodes: []Context };
 
 pub fn ContextData(Texture: type) type {
     return struct {
-        x: u32,
-        y: u32,
+        const Self = @This();
+
+        x: AxisPosition,
+        y: AxisPosition,
         width: AxisSize,
         height: AxisSize,
         tex: Texture,
+
+        pub fn getAxisPos(context_data: *const Self, axis: Axis) AxisPosition {
+            return if (axis == .x) context_data.x else context_data.y;
+        }
+
+        pub fn getAxisSize(context_data: *const Self, axis: Axis) AxisSize {
+            return if (axis == .x) context_data.width else context_data.height;
+        }
+
+        pub fn setPosOnAxis(context_data: *Self, axis: Axis, pos: u32) void {
+            if (axis == .x) {
+                context_data.x = AxisPosition{ .fixed = pos };
+            } else {
+                context_data.y = AxisPosition{ .fixed = pos };
+            }
+        }
+
+        pub fn setSizeOnAxis(context_data: *Self, axis: Axis, size: u32) void {
+            if (axis == .x) {
+                context_data.width = AxisSize{ .fixed = size };
+            } else {
+                context_data.height = AxisSize{ .fixed = size };
+            }
+        }
     };
 }
+
+pub const Axis = enum {
+    x,
+    y,
+};
+
+pub const AxisPositionType = enum {
+    fixed,
+    aligned,
+};
+
+pub const AlignmentPercent = struct {
+    percent: u7,
+
+    pub fn init(percent: u7) AlignmentPercent {
+        assert(percent >= 0 and percent <= 100);
+        return AlignmentPercent{
+            .percent = percent,
+        };
+    }
+};
+
+pub const AxisPosition = union(AxisPositionType) {
+    fixed: u32,
+    aligned: AlignmentPercent,
+};
 
 pub const AxisSizeType = enum {
     grow,
