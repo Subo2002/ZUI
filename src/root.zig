@@ -584,8 +584,8 @@ pub fn UI(Texture: type, ID: type) type {
         }
 
         pub fn getContext(ui: *Self, name: ID) Context {
-            if (!ui.name_to_cntx.contains(name)) return .invalid;
-            return ui.name_to_cntx.get(name);
+            if (!ui.name_to_context.contains(name)) return .invalid;
+            return ui.name_to_context.get(name);
         }
 
         pub const InteractedUI = struct {
