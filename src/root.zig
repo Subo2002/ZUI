@@ -157,7 +157,7 @@ pub const InternalContextDataFlags = packed struct {
     interactable: bool,
 };
 
-pub fn InternalContextData(ContextDataType: type, IDType: type) type {
+pub fn InternalContextData(ContextData: type, IDType: type) type {
     return struct {
         const Self = @This();
 
@@ -189,7 +189,7 @@ pub fn InternalContextData(ContextDataType: type, IDType: type) type {
             },
         };
 
-        context: ContextDataType,
+        context: ContextData,
         name: ?IDType = null,
         parent: Context,
         no_children: u32,
@@ -224,15 +224,32 @@ pub const NamedContextData = struct {
     }
 };
 
-pub fn UI(Texture: type, ID: type) type {
+pub fn InteractionType(ID: type, Interactor: type) type {
     return struct {
-        pub const ContextDataType = ContextData(Texture);
+        const Self = @This();
+        interactor: Interactor,
+        cntx_name: ID,
+
+        pub fn init(interactor: Interactor, name: ID) Self {
+            return Self{
+                .interactor = interactor,
+                .cntx_name = name,
+            };
+        }
+    };
+}
+
+pub fn UI(Texture: type, ID: type, Interactor: type, Interactee: type, default_interactee: Interactee, updateInteracted: fn (*Interactee, *const Interactor) void) type {
+    return struct {
+        pub const ContextData = ContextDataType(Texture);
+        pub const Interaction = InteractionType(ID, Interactor);
 
         no_nodes: u32,
         nodes_limit: u32,
-        comps: std.MultiArrayList(InternalContextData(ContextDataType, ID)),
-        name_to_context: std.AutoArrayHashMapUnmanaged(ID, Context),
-        name_to_clicked: std.AutoArrayHashMapUnmanaged(ID, bool),
+        comps: std.MultiArrayList(InternalContextData(ContextData, ID)),
+        name_to_context: std.AutoArrayHashMapUnmanaged(ID, Context), //lives on ui update cycle
+
+        interactees: std.AutoArrayHashMapUnmanaged(ID, Interactee), //lives on ui reactions cycle
 
         no_leafs: u32,
         root: Context,
@@ -246,7 +263,7 @@ pub fn UI(Texture: type, ID: type) type {
             ui.root = .invalid;
             ui.comps = .empty;
             ui.name_to_context = .empty;
-            ui.name_to_clicked = .empty;
+            ui.interactees = .empty;
         }
 
         pub fn clear(ui: *Self) void {
@@ -259,7 +276,7 @@ pub fn UI(Texture: type, ID: type) type {
 
         pub fn deinit(ui: *Self, alloc: Allocator) void {
             ui.comps.deinit(alloc);
-            ui.name_to_clicked.deinit(alloc);
+            ui.interactees.deinit(alloc);
             ui.name_to_context.deinit(alloc);
         }
 
@@ -279,7 +296,7 @@ pub fn UI(Texture: type, ID: type) type {
             unreachable;
         }
 
-        pub fn addContext(ui: *Self, parent: Context, child: ContextDataType, alloc: Allocator) !Context {
+        pub fn addContext(ui: *Self, parent: Context, child: ContextData, alloc: Allocator) !Context {
             const context = try ui.getContextRef(alloc);
             const comps = ui.comps;
             comps.items(.context)[context.index] = child;
@@ -292,7 +309,7 @@ pub fn UI(Texture: type, ID: type) type {
             return context;
         }
 
-        pub fn addRoot(ui: *Self, data: ContextDataType, alloc: Allocator) !Context {
+        pub fn addRoot(ui: *Self, data: ContextData, alloc: Allocator) !Context {
             const context = try ui.getContextRef(alloc);
             const comps = ui.comps;
             comps.items(.context)[context.index] = data;
@@ -377,7 +394,7 @@ pub fn UI(Texture: type, ID: type) type {
         //add a second chid cntx
         //and in that child cntx add a child node that is the button.
         pub fn computePrimaryAxisPositions(ui: *Self, nodes: []Context, child_map: ChildMapType, axis: Axis, trans_allc: Allocator) !void {
-            const contexts: []ContextDataType = ui.comps.items(.context);
+            const contexts: []ContextData = ui.comps.items(.context);
             const no_childrens: []u32 = ui.comps.items(.no_children);
             //works out primary positions of all it's child nodes
             for (nodes) |parent| {
@@ -483,8 +500,8 @@ pub fn UI(Texture: type, ID: type) type {
                         }
                     };
                     const next_move = &wanted_moving[next_index];
-                    const node: *ContextDataType = &contexts[cur_index];
-                    const next_node: *ContextDataType = &contexts[next_index];
+                    const node: *ContextData = &contexts[cur_index];
+                    const next_node: *ContextData = &contexts[next_index];
 
                     if (dirc == 1) {
                         const gap: i32 =
@@ -587,60 +604,76 @@ pub fn UI(Texture: type, ID: type) type {
             return ui.name_to_context.get(name) orelse .invalid;
         }
 
-        pub const InteractedUI = struct {
-            interactor_index: u32,
-            cntx_name: ID,
-
-            pub fn init(interactor: u32, name: ID) InteractedUI {
-                return InteractedUI{
-                    .interactor_index = interactor,
-                    .cntx_name = name,
-                };
-            }
-        };
-
         //this could not use depth_first_nodes and instead just deal with the additional hassle of adding popins on the left and shifting child node nums
         //just checks every ui thing against every "click" and does a bounds check
         //
-        pub fn processClicks(ui: *Self, depth_first_nodes: []Context, click_positions: []const Vector2I, interacteds_buffer: []InteractedUI) []InteractedUI {
+        pub fn processClicks(ui: *Self, depth_first_nodes: []Context, click_positions: []const Vector2I, interactors: []const Interactor, interactions_buffer: []Interaction) []Interaction {
             const flags: []InternalContextDataFlags = ui.comps.items(.flags);
-            const data: []ContextDataType = ui.comps.items(.context);
+            const data: []ContextData = ui.comps.items(.context);
             const names: []?ID = ui.comps.items(.name);
             var no_interactions: u32 = 0;
             for (0..depth_first_nodes.len) |index| {
                 const node_index = depth_first_nodes.len - index - 1;
                 const flag: *const InternalContextDataFlags = &flags[node_index];
                 if (!flag.interactable) continue;
-                const node: *const ContextDataType = &data[node_index];
+                const node: *const ContextData = &data[node_index];
                 for (click_positions, 0..) |click, interactor| {
                     if (click.x < node.x.fixed or node.x.fixed + node.width.fixed < click.x) continue;
                     if (click.y < node.y.fixed or node.y.fixed + node.height.fixed < click.y) continue;
                     const name = names[node_index].?; //name should exist, assert it
-                    interacteds_buffer[no_interactions] = .init(@intCast(interactor), name);
+                    interactions_buffer[no_interactions] = .init(interactors[interactor], name);
                     no_interactions += 1;
                 }
             }
-            return interacteds_buffer[0..no_interactions];
+            return interactions_buffer[0..no_interactions];
         }
 
-        pub fn prepForIsClicked(ui: *Self, interactions: []InteractedUI, allc: Allocator) !void {
-            for (interactions) |interaction| {
-                try ui.name_to_clicked.put(allc, interaction.cntx_name, true);
+        pub fn prepForFetching(ui: *Self, interactions: []Interaction, allc: Allocator) !void {
+            for (interactions) |*interaction| {
+                const interactee =
+                    if (ui.interactees.getPtr(interaction.cntx_name)) |interactee|
+                        interactee
+                    else blk: {
+                        try ui.interactees.put(allc, interaction.cntx_name, default_interactee);
+                        break :blk ui.interactees.getPtr(interaction.cntx_name).?;
+                    };
+                updateInteracted(interactee, &interaction.interactor);
             }
         }
 
         //call before processing
         pub fn clearInteractions(ui: *Self) void {
-            ui.name_to_clicked.clearRetainingCapacity();
+            ui.interactees.clearRetainingCapacity();
+        }
+
+        pub fn get(ui: *Self, name: ID) ?Interactee {
+            return ui.interactees.get(name);
         }
 
         //call around the actual code where the ui context is created
         //but be aware it's asking if it got clicked according to the ui layout of last frame
         pub fn isClicked(ui: *Self, name: ID) bool {
-            if (ui.name_to_clicked.get(name)) |clicked| return clicked else return false;
+            if (ui.interactees.get(name)) |clicked| return clicked else return false;
         }
     };
 }
+
+pub const MouseInteractor = struct {
+    down: bool,
+};
+
+pub const ButtonInteractee = packed struct {
+    clicked: bool = false,
+    hover: bool = false,
+
+    pub fn interact(self: *ButtonInteractee, interactor: *const MouseInteractor) void {
+        self.clicked = self.clicked or interactor.down;
+    }
+
+    pub fn isClicked(self: *const ButtonInteractee) bool {
+        return self.clicked;
+    }
+};
 
 test "compiles" {
     //processing
@@ -648,7 +681,14 @@ test "compiles" {
         little_rect,
     };
 
-    const UIType = UI(void, Name);
+    const UIType = UI(
+        void,
+        Name,
+        MouseInteractor,
+        ButtonInteractee,
+        ButtonInteractee{},
+        ButtonInteractee.interact,
+    );
     var ui: UIType = undefined;
     const allc = std.testing.allocator;
     ui.init();
@@ -671,9 +711,11 @@ test "compiles" {
         );
 
         //how the actual code looks about the codebase
-        try std.testing.expect(loop_count == 0 or ui.isClicked(.little_rect));
-        if (ui.isClicked(.little_rect)) {
-            //blah blah
+        try std.testing.expect(loop_count == 0 or ui.get(.little_rect).?.isClicked());
+        if (ui.get(.little_rect)) |button| {
+            if (button.clicked) {
+                //blah blah
+            }
         }
         const little_rect = try ui.addContext(
             ui.root,
@@ -698,25 +740,27 @@ test "compiles" {
         try ui.computePrimaryAxisPositions(nodes.items, child_map, .x, allc);
         var depth_first_nodes = try ui.createDepthFirstNodeList(child_map, allc);
         defer depth_first_nodes.deinit(allc);
-        const clicks = [_]Vector2I{.init(55, 15)};
-        var interacted_ui_buffer: [1]UIType.InteractedUI = undefined;
-        const interacted_ui = ui.processClicks(
+        const mouse = [_]MouseInteractor{.{ .down = true }};
+        const mouse_pos = [_]Vector2I{.init(55, 15)};
+        var interacted_ui_buffer: [1]UIType.Interaction = undefined;
+        const interactions = ui.processClicks(
             depth_first_nodes.items,
-            clicks[0..],
+            mouse_pos[0..],
+            mouse[0..],
             interacted_ui_buffer[0..1],
         );
-        try ui.prepForIsClicked(interacted_ui, allc);
+        try ui.prepForFetching(interactions, allc);
 
         try std.testing.expect(nodes.items.len == 2);
         try std.testing.expect(ui.comps.items(.context)[nodes.items[0].index].x.fixed == 0);
         try std.testing.expect(ui.comps.items(.context)[nodes.items[1].index].x.fixed == 50);
-        try std.testing.expect(interacted_ui.len > 0);
+        try std.testing.expect(interactions.len > 0);
     }
 }
 
 pub const Children = struct { nodes: []Context };
 
-pub fn ContextData(Texture: type) type {
+pub fn ContextDataType(Texture: type) type {
     return struct {
         const Self = @This();
 
