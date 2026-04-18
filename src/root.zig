@@ -5,7 +5,7 @@ const Stack = List;
 const assert = std.debug.assert;
 
 const zsmath = @import("zsmath");
-const Vector2I = zsmath.Vector2I;
+const Vector2I = zsmath.Vector2Int(i16);
 
 //ui involves going up and down a context tree
 //want a struct that is "what you want this context to be"
