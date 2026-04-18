@@ -5,7 +5,7 @@ const Stack = List;
 const assert = std.debug.assert;
 
 const zsmath = @import("zsmath");
-const Vector2I = zsmath.Vector2Int(i16);
+const Vector2I32 = zsmath.Vector2Int(i32);
 
 //ui involves going up and down a context tree
 //want a struct that is "what you want this context to be"
@@ -607,7 +607,7 @@ pub fn UI(Texture: type, ID: type, Interactor: type, Interactee: type, default_i
         //this could not use depth_first_nodes and instead just deal with the additional hassle of adding popins on the left and shifting child node nums
         //just checks every ui thing against every "click" and does a bounds check
         //
-        pub fn processClicks(ui: *Self, depth_first_nodes: []Context, click_positions: []const Vector2I, interactors: []const Interactor, interactions_buffer: []Interaction) []Interaction {
+        pub fn processClicks(ui: *Self, depth_first_nodes: []Context, click_positions: []const Vector2I32, interactors: []const Interactor, interactions_buffer: []Interaction) []Interaction {
             const flags: []InternalContextDataFlags = ui.comps.items(.flags);
             const data: []ContextData = ui.comps.items(.context);
             const names: []?ID = ui.comps.items(.name);
@@ -741,7 +741,7 @@ test "compiles" {
         var depth_first_nodes = try ui.createDepthFirstNodeList(child_map, allc);
         defer depth_first_nodes.deinit(allc);
         const mouse = [_]MouseInteractor{.{ .down = true }};
-        const mouse_pos = [_]Vector2I{.init(55, 15)};
+        const mouse_pos = [_]Vector2I32{.init(55, 15)};
         var interacted_ui_buffer: [1]UIType.Interaction = undefined;
         const interactions = ui.processClicks(
             depth_first_nodes.items,
