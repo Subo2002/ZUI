@@ -37,8 +37,8 @@
     // internet connectivity.
     .dependencies = .{
         .ZSMath = .{
-            .url = "git+https://github.com/Subo2002/ZSMath#35634fb07bdf8d0566a26aa08f708868c07546a2",
-            .hash = "ZSMath-0.0.0-xSatLkqcAAD9tIyer8XcWGERwukDHILNSNIP8l1qFZ0p",
+            .url = "git+https://github.com/Subo2002/ZSMath#d0c5b14f8aef9e29b39d1dfcadf333bfa33b77e3",
+            .hash = "ZSMath-0.0.0-xSatLgydAAAsrlpE-ehEfvwsDBzS2eAm2-d_yCMBSEvG",
         },
     },
     .paths = .{
